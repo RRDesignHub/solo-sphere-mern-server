@@ -24,6 +24,7 @@ async function run() {
   try {
     await client.connect();
     const jobCollection = client.db('soloDB').collection('jobs');
+    const bidCollection = client.db('soloDB').collection('bids');
 
     // get all jobs from db
     app.get('/jobs', async(req, res) =>{
@@ -78,7 +79,28 @@ async function run() {
       res.send(result);
     })
 
+    // save bids to db
+    app.post('/addBid', async(req, res) =>{
+      const newBid = req.body;
 
+      // check if a user applied for the job before:
+      const query = {bidderEmail: newBid?.bidderEmail, jobId: newBid?.jobId}
+      const alreadyApplied = await bidCollection.findOne(query)
+
+      if(alreadyApplied){
+        return res.status(400).send("You already applied for the job!!!")
+      } 
+      const result = await bidCollection.insertOne(newBid);
+
+      // increase bid for new bid for job
+      const id = newBid?.jobId;
+      const filter = {_id: new ObjectId(id)};
+      const update = {
+        $inc: {bid_count: 1}
+      }
+      const updateBidCount = await jobCollection.updateOne(filter, update);
+      res.send(result);
+    })
 
     // Send a ping to confirm a successful connection
     // await client.db('admin').command({ ping: 1 })
