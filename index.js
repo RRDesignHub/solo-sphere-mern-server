@@ -2,13 +2,17 @@ const express = require('express')
 const cors = require('cors')
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb')
 require('dotenv').config()
-
+const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
 const port = process.env.PORT || 9000
 const app = express()
 
-app.use(cors())
+app.use(cors({
+  origin: ["http://localhost:5173"],
+  credentials:true
+}))
 app.use(express.json())
-
+app.use(cookieParser());
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.u6vhn.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -20,15 +24,74 @@ const client = new MongoClient(uri, {
   },
 })
 
+const verifyToken = (req, res, next) =>{
+  const token = req.cookies?.token;
+
+  if(!token){
+    return res.status(401).send({message: "Unauthorised access!!!"})
+  }
+  jwt.verify(token, process.env.SECRET_KEY, (error, decoded) =>{
+    if(error){
+      return res.status(401).send({message: "Unauthorised access!!!"})
+    }
+    req.user = decoded;
+  })
+  next();
+}
+
 async function run() {
   try {
     await client.connect();
     const jobCollection = client.db('soloDB').collection('jobs');
     const bidCollection = client.db('soloDB').collection('bids');
 
+
+    // jwt web token generate:
+    app.post('/jwt', async(req, res) =>{
+      const email = req.body;
+      const token = jwt.sign(email, process.env.SECRET_KEY, {expiresIn: "30d"})
+      res
+        .cookie("token", token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === "production",
+          sameSite: process.env.NODE_ENV === "production" ? 'none' : 'strict',
+        })
+        .send({message:true});
+    })
+
+
+    // clear cookie from browser:
+    app.get('/logoutJWT', async(req, res) =>{
+      res.clearCookie('token',{
+        maxAge: 0,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? 'none' : 'strict',
+      })
+      .send({message:true})
+    })
+
     // get all jobs from db
     app.get('/jobs', async(req, res) =>{
       const result = await jobCollection.find().toArray();
+      res.send(result);
+    })
+
+    // get all jobs from db
+    app.get('/allJobs', async(req, res) =>{
+      const filter = req.query.filterByCategory;
+      const search = req.query.search;
+      const sort = req.query.sort;
+      let option ={}
+      if (sort){
+        option = {sort: {deadline: sort == 'asc' ? 1 : -1}}
+      }
+      let query = {
+        jobTitle: {$regex: search, $options: "i"}
+      };
+      if(filter){
+        query.jobCategory = filter;
+      }
+      const result = await jobCollection.find(query, option).toArray();
       res.send(result);
     })
 
@@ -87,9 +150,10 @@ async function run() {
       const query = {bidderEmail: newBid?.bidderEmail, jobId: newBid?.jobId}
       const alreadyApplied = await bidCollection.findOne(query)
 
-      if(alreadyApplied){
-        return res.status(400).send("You already applied for the job!!!")
-      } 
+      if (alreadyApplied) {
+        return res.status(400).json({ message: "You already applied for the job!!!" });
+      }
+     
       const result = await bidCollection.insertOne(newBid);
 
       // increase bid for new bid for job
@@ -102,11 +166,41 @@ async function run() {
       res.send(result);
     })
 
-    // Send a ping to confirm a successful connection
-    // await client.db('admin').command({ ping: 1 })
-    // console.log(
-    //   'Pinged your deployment. You successfully connected to MongoDB!'
-    // )
+    
+     // get all bids for specipic bidder from db:
+     app.get('/myBids/:email', async(req, res) =>{
+      const queryEmail = req.params.email;
+      const query = {bidderEmail : queryEmail};
+      const result = await bidCollection.find(query).toArray();
+      res.send(result);
+    })
+
+    // get all bid request for specipic buyer from db:
+    app.get('/bidRequest/:email', verifyToken, async(req, res) =>{
+      const decodedEmail = req?.user?.email;
+      const queryEmail = req.params.email;
+      if(decodedEmail !== queryEmail){
+        return res.status(401).send({message:"Unauthorosied Access!"})
+      }
+
+      const query = {buyerEmail : queryEmail};
+      const result = await bidCollection.find(query).toArray();
+      res.send(result);
+    })
+
+    // update status for bid request in db:
+    app.patch('/bidStatusUpdate/:id', async(req, res) =>{
+      const id = req.params.id;
+      const status = req.body.updatedStatus;
+      const filter = {_id: new ObjectId(id)}
+      const updated = {
+        $set: {status}
+      } 
+      const result = await bidCollection.updateOne(filter, updated)
+      res.send(result)
+    })
+
+
   } finally {
     // Ensures that the client will close when you finish/error
   }
